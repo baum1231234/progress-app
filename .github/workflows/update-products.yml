@@ -1,0 +1,45 @@
+# Läuft im öffentlichen Pages-Repo (baum1231234/progress-app), wird von `npm run deploy:pages` dorthin kopiert.
+# Baut einmal im Monat die Liste der meistgescannten Produkte aus Open Food Facts neu und veröffentlicht sie, ohne PC.
+name: Produktliste aktualisieren
+
+on:
+  schedule:
+    - cron: '17 4 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install duckdb==2.0.0
+      - name: Produktliste bauen
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/products.csv.gz" https://static.openfoodfacts.org/data/en.openfoodfacts.org.products.csv.gz
+          python -I .github/scripts/build-off-foods.py off-foods.json 30000 "$RUNNER_TEMP/products.csv.gz"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Offline-Cache erneuern
+        run: node .github/scripts/generate-local-service-worker.mjs .
+        env:
+          PROGRESS_BASE_URL: /progress-app
+      - name: Veröffentlichen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add off-foods.json service-worker.js
+          if git diff --cached --quiet; then echo "Keine Änderung."; exit 0; fi
+          git commit -m "data: Produktliste $(date +%Y-%m)"
+          git push
+          gh api -X POST "repos/${{ github.repository }}/pages/builds" || true
